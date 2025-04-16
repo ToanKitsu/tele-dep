@@ -119,26 +119,59 @@ def has_specific_button(message, button_text_to_find):
     return False
 
 
-def extract_username_from_text(text: str) -> str | None:
-    """Extracts username from 'Retweet from **username**' pattern."""
+def extract_action_and_username(text: str) -> tuple[str | None, str | None]:
+    """
+    Extracts the action type (Tweet, Retweet, Quote, Reply) and username,
+    handling optional bold markdown around the action word and username.
+    Returns (action_type, username) or (None, None).
+    """
     if not text:
-        return None
-    # Regex to find text between double asterisks after "Retweet from "
-    match = re.search(r'from\s+\*\*([^ *]+?)\*\*', text, re.IGNORECASE) # Find 'from **username**'
-    if match:
-        username = match.group(1)
-        logger.debug(f"Extracted username '{username}' using primary pattern.")
-        return username
+        return None, None
 
-    # Fallback pattern (less reliable, keep as last resort if needed)
-    # match = re.search(r'from (\w+)', text, re.IGNORECASE)
-    # if match:
-    #    username = match.group(1)
-    #    logger.debug(f"Extracted username '{username}' using fallback pattern.")
-    #    return username
+    # Patterns: (regex, action_name_if_matched)
+    # Now explicitly look for optional ** around the action word.
+    patterns = [
+        # 1. Patterns with specific Action Words (allowing optional ** around action)
+        # Captures ActionWord in group 1, Username in group 2
+        (r"\**\s*(Retweet)\s*\**\s+from\s+\*\*([^ *]+?)\*\*", "Retweet"),
+        (r"\**\s*(Tweet)\s*\**\s+from\s+\*\*([^ *]+?)\*\*", "Tweet"),
+        (r"\**\s*(Quote)\s*\**\s+from\s+\*\*([^ *]+?)\*\*", "Quote"),
+        (r"\**\s*(Reply)\s*\**\s+from\s+\*\*([^ *]+?)\*\*", "Reply"),
 
-    logger.warning(f"Could not extract username from text: '{text[:70]}...'")
-    return None
+        # 2. Fallback: Just 'from **username**' - Action Unknown
+        # Captures Username in group 1
+        (r"from\s+\*\*([^ *]+?)\*\*", None)
+    ]
+
+    for pattern, action_type_name in patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            if action_type_name is not None:
+                # Action word pattern matched
+                action_type = action_type_name # Use the predefined name
+                username = match.group(2).strip() # Username is the second capture group
+                logger.debug(f"Extracted Action/User: '{action_type}' / '{username}' (Pattern: Action Word)")
+            else:
+                # Fallback pattern matched
+                action_type = None # Action is unknown
+                username = match.group(1).strip() # Username is the first capture group
+                logger.debug(f"Extracted User only: '{username}' (Pattern: Fallback 'from')")
+
+            return action_type, username
+
+    # If absolutely nothing matched
+    logger.warning(f"Could not extract any username/action structure from text: '{text[:70]}...'")
+    return None, None
+
+
+# ---> NEW: Function to get emoji for action type <---
+def get_action_emoji(action_type: str | None) -> str:
+    # ... (implementation remains the same) ...
+    if action_type == "Retweet": return "🔄 "
+    elif action_type == "Quote": return "💬 "
+    elif action_type == "Reply": return "🖇️ "
+    elif action_type == "Tweet": return "📝 "
+    else: return "➡️ " # Fallback
 
 def create_fxtwitter_url(original_url: str | None) -> str | None:
     """Converts a twitter.com or x.com URL to an fxtwitter.com URL."""
@@ -158,21 +191,21 @@ def create_fxtwitter_url(original_url: str | None) -> str | None:
         logger.error(f"Error parsing or converting URL '{original_url}': {e}")
         return None
 
-def format_fxtwitter_message_html(username: str | None, fxtwitter_url: str | None) -> str | None:
-    """Formats the short message for FXTwitter mode using HTML."""
+def format_fxtwitter_message_html(action_type: str | None, username: str | None, fxtwitter_url: str | None) -> str | None:
+    """Formats the short message for FXTwitter mode using HTML and action type."""
     if not username or not fxtwitter_url:
-        # Need both to create the intended message
-        logger.warning(f"Cannot format FXTwitter message: username='{username}', url='{fxtwitter_url}'")
+        logger.warning(f"Cannot format FXTwitter message: action='{action_type}', username='{username}', url='{fxtwitter_url}'")
         return None
 
-    # HTML format: 🎥🔄 Retweet from <a href="fxtwitter_url">username</a>
-    # Use HTML entities for safety if username could contain <, >, &
-    import html
-    safe_username = html.escape(username)
-    # The URL should generally be safe, but cautious encoding doesn't hurt
-    safe_url = html.escape(fxtwitter_url)
+    emoji = get_action_emoji(action_type)
+    action_text = action_type if action_type else "Action" # Default text if type unknown
 
-    return f'🎥🔄 Retweet from <a href="{safe_url}">{safe_username}</a>'
+    safe_username = html.escape(username)
+    safe_url = html.escape(fxtwitter_url) # URL for the inline link
+
+    # Format: Emoji Action from <a href="fxtwitter_url">username</a>
+    return f'{emoji}{action_text} from <a href="{safe_url}">{safe_username}</a>'
+
 
 # --- Batch Processing ---
 async def process_batch(target_chat_ids, func, args, semaphore, operation_desc="task"):
