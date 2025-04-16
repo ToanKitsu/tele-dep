@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+*.session
+*.session-journal
+downloads/ # Nếu có thư mục download tạm
+venv/
+.vscode/
+*.log
