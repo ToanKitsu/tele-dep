@@ -3,19 +3,18 @@
 import asyncio
 import logging
 import signal # For graceful Ctrl+C handling
-from telegram import BotCommand # Ensure this is imported
+from telegram import BotCommand
+
 # --- Configure logging BEFORE other imports ---
 from utils import logging_config
 logging_config.setup_logging()
 # ---------------------------------------------
 
-
-
 from telethon.errors import SessionPasswordNeededError
 from telegram.ext import Application # Import Application from PTB
-from telegram import BotCommand
 
-from config import settings
+# Import necessary modules
+from config import settings, persistent_config # <-- Import persistent_config
 from telegram_clients import setup
 from handlers import message_handlers
 from handlers.command_handlers import registration as command_registration
@@ -33,10 +32,11 @@ async def main():
     logger.info("--- Starting Telegram Bot Application ---")
 
     # Basic configuration check (Telegram and Bot settings)
-    # Removed blockchain-related checks
-    if not all([settings.API_ID, settings.API_HASH, settings.PHONE_NUMBER, settings.BOT_TOKEN, settings.SOURCE_BOT_IDENTIFIER, settings.TARGET_CHAT_IDS]):
-        logger.error("One or more critical settings are missing (API_ID, API_HASH, PHONE_NUMBER, BOT_TOKEN, SOURCE_BOT_IDENTIFIER, TARGET_CHAT_IDS). Please check your .env file.")
+    # Check for core Telethon/Bot settings first
+    if not all([settings.API_ID, settings.API_HASH, settings.PHONE_NUMBER, settings.BOT_TOKEN, settings.SOURCE_BOT_IDENTIFIER]):
+        logger.error("One or more critical settings are missing (API_ID, API_HASH, PHONE_NUMBER, BOT_TOKEN, SOURCE_BOT_IDENTIFIER). Please check your .env file.")
         return
+    # Note: TARGET_CHAT_IDS_FROM_ENV is now optional
 
     # 1. Initialize clients & application
     try:
@@ -49,43 +49,56 @@ async def main():
         await ptb_application.initialize()
         logger.info("PTB Application initialized.")
 
-        # --->>> THÊM ĐOẠN CODE SET COMMANDS TẠI ĐÂY <<<---
+        # Set bot commands
         try:
             logger.info("Setting bot commands list...")
             commands_to_set = [
                 BotCommand("start", "Main menu"),
-                BotCommand("display", "Configure group display mode"),
-                # Khi bạn thêm các command khác (ví dụ /wallet, /deploy),
-                # hãy thêm chúng vào danh sách này:
-                # BotCommand("wallet", "Manage wallets"),
-                # BotCommand("deploy", "Deploy new token"),
-                # BotCommand("addlp", "Add liquidity & Buy"),
+                BotCommand("display", "Configure group display mode"), # Updated command name
+                # Add other commands here when needed
             ]
             await ptb_application.bot.set_my_commands(commands_to_set)
             logger.info("Successfully set bot commands list.")
         except Exception as cmd_err:
-            # Lỗi này thường ít xảy ra nếu token hợp lệ, nhưng vẫn nên bắt lỗi
             logger.error(f"Failed to set bot commands: {cmd_err}", exc_info=True)
-        # --->>> KẾT THÚC ĐOẠN CODE SET COMMANDS <<<---
 
     except Exception as e:
         logger.critical(f"Failed to initialize Telegram clients/application: {e}", exc_info=True)
         return # Cannot continue if clients/app fail
 
-    # 2. Create Semaphore (Still needed for batch sending in message_handlers)
+    # ---> Load initial groups for logging and potential seeding <---
+    try:
+        initial_target_groups = await persistent_config.load_target_groups()
+        if not initial_target_groups and settings.TARGET_CHAT_IDS_FROM_ENV:
+            logger.info(f"No persistent groups file ({persistent_config.TARGET_GROUPS_FILE}) found, seeding with groups from .env")
+            # Use list directly from settings as it's already processed
+            initial_target_groups = settings.TARGET_CHAT_IDS_FROM_ENV
+            # Save this initial list to the JSON file (needs lock)
+            async with persistent_config._file_lock:
+                await persistent_config._save_target_groups(set(initial_target_groups)) # Use internal save with lock
+            # Reload to ensure format is correct and confirm save
+            initial_target_groups = await persistent_config.load_target_groups()
+            logger.info(f"Seeded and saved {len(initial_target_groups)} groups to {persistent_config.TARGET_GROUPS_FILE}")
+        elif not initial_target_groups:
+             logger.info(f"No persistent groups file found and no initial groups specified in .env.")
+        else:
+            logger.info(f"Loaded {len(initial_target_groups)} target groups initially from {persistent_config.TARGET_GROUPS_FILE}.")
+
+    except Exception as load_err:
+        logger.error(f"Error loading/seeding initial target groups: {load_err}", exc_info=True)
+        # Decide if this is critical. Maybe continue with an empty list?
+        initial_target_groups = []
+    # -------------------------------------------------------------
+
+    # 2. Create Semaphore
     semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_TASKS)
     logger.info(f"Concurrency limit set to: {settings.MAX_CONCURRENT_TASKS}")
 
     # 3. Register Handlers
     try:
-         # Register PTB command handlers using the new registration module
         command_registration.register_all_command_handlers(ptb_application)
-
-        # Register Telethon event handlers (passing necessary components)
-        # (Dòng này giữ nguyên)
         message_handlers.register_handlers(ptb_application, telethon_client, ptb_bot, semaphore)
         logger.info("Successfully registered command and message handlers.")
-        # --- KẾT THÚC SỬA ĐỔI ---
     except Exception as e:
         logger.critical(f"Failed to register handlers: {e}", exc_info=True)
         return # Stop if handlers fail to register
@@ -95,7 +108,34 @@ async def main():
     try:
         logger.info("Connecting Telethon client (User Account)...")
         async with telethon_client:
-            # ... (telethon client start and checks) ...
+            await telethon_client.start(
+                phone=settings.PHONE_NUMBER,
+                password=lambda: input('Enter Telegram password (2FA): ') # Prompt for 2FA if needed
+            )
+            if not await telethon_client.is_user_authorized():
+                logger.error("Telethon client authorization failed. Cannot proceed.")
+                return
+
+            logger.info("Telethon client authorized and connected successfully.")
+            user = await telethon_client.get_me()
+            logger.info(f"Telethon client running as user: {user.first_name} (ID: {user.id})")
+            logger.info(f"Listening for messages from source bot ID: {settings.SOURCE_BOT_IDENTIFIER}...")
+
+            # ---> Log dynamically loaded count just before starting <---
+            try:
+                # Load the latest list again right before the main loop starts
+                current_dynamic_targets = await persistent_config.load_target_groups()
+                targets_str = ', '.join(map(str, current_dynamic_targets[:5]))
+                if len(current_dynamic_targets) > 5: targets_str += "..."
+                logger.info(f"Will forward messages to {len(current_dynamic_targets)} dynamically managed target chat(s): [{targets_str}]")
+            except Exception as log_load_err:
+                 logger.error(f"Could not load dynamic target groups for final startup log: {log_load_err}")
+            # ------------------------------------------------------------
+
+            if settings.BUTTON_TEXT_TO_FIND:
+                logger.info(f"Filtering for original button text: '{settings.BUTTON_TEXT_TO_FIND}'")
+            logger.info(f"Generating deep links for bot: @{ptb_application.bot.username}")
+
 
             # Start PTB Application and Updater
             logger.info("Starting PTB Application...")
@@ -103,8 +143,8 @@ async def main():
 
             logger.info("Starting PTB Updater for polling updates...")
             await ptb_application.updater.start_polling(
-                 # ---> FIX: Add 'callback_query' to allowed_updates <---
-                allowed_updates=["message", "callback_query"],
+                 # ---> FIX: Add 'callback_query' AND 'chat_member' <---
+                allowed_updates=["message", "callback_query", "chat_member"],
                 drop_pending_updates=True
             )
             ptb_started = True
