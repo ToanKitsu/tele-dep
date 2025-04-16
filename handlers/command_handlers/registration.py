@@ -7,6 +7,8 @@ from telegram.ext import Application, CommandHandler, CallbackContext, Conversat
 # Import handlers from submodules
 from .start.default import handle_start_default
 from .start.deep_link import handle_start_deep_link
+# --->>> UPDATE IMPORT PATH AND FUNCTION NAME <<<---
+from .display.group_display import get_group_display_conversation_handler
 # Import future handlers here, e.g.:
 # from .wallet.add import handle_wallet_add_start
 # from .deploy.token import handle_deploy_token_start
@@ -30,21 +32,16 @@ def register_all_command_handlers(application: Application):
     logger.info("Registering command handlers...")
 
     # --- /start Command ---
-    # Use a dispatcher to handle both cases (with/without args)
     application.add_handler(CommandHandler("start", start_command_dispatcher))
     logger.info("Registered /start command dispatcher.")
 
+    # --->>> RENAME AND UPDATE HANDLER REGISTRATION <<<---
+    group_display_handler = get_group_display_conversation_handler()
+    application.add_handler(group_display_handler)
+    logger.info("Registered /display conversation handler.")
+    # ----------------------------------------
+
     # --- Future Command Handlers ---
-    # Example: Register wallet commands (when created)
-    # wallet_conv_handler = get_wallet_conversation_handler() # Assume this getter exists in wallet/__init__.py or similar
-    # application.add_handler(wallet_conv_handler)
-    # logger.info("Registered /wallet conversation handler.")
-
-    # Example: Register deploy commands (when created)
-    # deploy_conv_handler = get_deploy_conversation_handler() # Assume this getter exists in deploy/__init__.py or similar
-    # application.add_handler(deploy_conv_handler)
-    # logger.info("Registered /deploy conversation handler.")
-
-    # Add other command handlers here as you create them...
+    # ... (keep existing comments) ...
 
     logger.info("All command handler registration complete.")

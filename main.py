@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import signal # For graceful Ctrl+C handling
-
+from telegram import BotCommand # Ensure this is imported
 # --- Configure logging BEFORE other imports ---
 from utils import logging_config
 logging_config.setup_logging()
@@ -54,6 +54,7 @@ async def main():
             logger.info("Setting bot commands list...")
             commands_to_set = [
                 BotCommand("start", "Main menu"),
+                BotCommand("display", "Configure group display mode"),
                 # Khi bạn thêm các command khác (ví dụ /wallet, /deploy),
                 # hãy thêm chúng vào danh sách này:
                 # BotCommand("wallet", "Manage wallets"),
@@ -94,26 +95,7 @@ async def main():
     try:
         logger.info("Connecting Telethon client (User Account)...")
         async with telethon_client:
-            # Start Telethon client (handles login/2FA)
-            await telethon_client.start(
-                phone=settings.PHONE_NUMBER,
-                password=lambda: input('Enter Telegram password (2FA): ') # Prompt for 2FA if needed
-            )
-            if not await telethon_client.is_user_authorized():
-                logger.error("Telethon client authorization failed. Cannot proceed.")
-                return
-
-            logger.info("Telethon client authorized and connected successfully.")
-            user = await telethon_client.get_me()
-            logger.info(f"Telethon client running as user: {user.first_name} (ID: {user.id})")
-            logger.info(f"Listening for messages from source bot ID: {settings.SOURCE_BOT_IDENTIFIER}...")
-            targets_str = ', '.join(map(str, settings.TARGET_CHAT_IDS[:5]))
-            if len(settings.TARGET_CHAT_IDS) > 5: targets_str += "..."
-            logger.info(f"Forwarding messages to {len(settings.TARGET_CHAT_IDS)} target chat(s): [{targets_str}]")
-            if settings.BUTTON_TEXT_TO_FIND:
-                logger.info(f"Filtering for original button text: '{settings.BUTTON_TEXT_TO_FIND}'")
-            logger.info(f"Generating deep links for bot: @{ptb_application.bot.username}")
-
+            # ... (telethon client start and checks) ...
 
             # Start PTB Application and Updater
             logger.info("Starting PTB Application...")
@@ -121,8 +103,8 @@ async def main():
 
             logger.info("Starting PTB Updater for polling updates...")
             await ptb_application.updater.start_polling(
-                 # Only need message for /start command now
-                allowed_updates=["message"], # Removed callback_query
+                 # ---> FIX: Add 'callback_query' to allowed_updates <---
+                allowed_updates=["message", "callback_query"],
                 drop_pending_updates=True
             )
             ptb_started = True

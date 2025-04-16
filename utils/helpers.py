@@ -1,8 +1,12 @@
-# -*- coding: utf-8 -*-
+# utils/helpers.py
 import asyncio
 import logging
+import re # Ensure re is imported
+import html # Ensure html is imported
+from urllib.parse import urlparse, urlunparse
 from telethon.tl.types import KeyboardButtonUrl, ReplyInlineMarkup, MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup # Từ python-telegram-bot
+from telegram.constants import ParseMode
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +117,62 @@ def has_specific_button(message, button_text_to_find):
             if isinstance(btn, KeyboardButtonUrl) and btn.text == button_text_to_find:
                 return True
     return False
+
+
+def extract_username_from_text(text: str) -> str | None:
+    """Extracts username from 'Retweet from **username**' pattern."""
+    if not text:
+        return None
+    # Regex to find text between double asterisks after "Retweet from "
+    match = re.search(r'from\s+\*\*([^ *]+?)\*\*', text, re.IGNORECASE) # Find 'from **username**'
+    if match:
+        username = match.group(1)
+        logger.debug(f"Extracted username '{username}' using primary pattern.")
+        return username
+
+    # Fallback pattern (less reliable, keep as last resort if needed)
+    # match = re.search(r'from (\w+)', text, re.IGNORECASE)
+    # if match:
+    #    username = match.group(1)
+    #    logger.debug(f"Extracted username '{username}' using fallback pattern.")
+    #    return username
+
+    logger.warning(f"Could not extract username from text: '{text[:70]}...'")
+    return None
+
+def create_fxtwitter_url(original_url: str | None) -> str | None:
+    """Converts a twitter.com or x.com URL to an fxtwitter.com URL."""
+    if not original_url:
+        return None
+    try:
+        parsed = urlparse(original_url)
+        # Check if it's a twitter or x.com URL
+        if parsed.netloc.lower() in ['twitter.com', 'x.com', 'www.twitter.com', 'www.x.com']:
+            # Reconstruct the URL with fxtwitter.com as the netloc
+            fxtwitter_parsed = parsed._replace(netloc='fxtwitter.com')
+            return urlunparse(fxtwitter_parsed)
+        else:
+            logger.warning(f"URL '{original_url}' is not a Twitter/X URL, cannot convert.")
+            return original_url # Return original if not twitter/x
+    except Exception as e:
+        logger.error(f"Error parsing or converting URL '{original_url}': {e}")
+        return None
+
+def format_fxtwitter_message_html(username: str | None, fxtwitter_url: str | None) -> str | None:
+    """Formats the short message for FXTwitter mode using HTML."""
+    if not username or not fxtwitter_url:
+        # Need both to create the intended message
+        logger.warning(f"Cannot format FXTwitter message: username='{username}', url='{fxtwitter_url}'")
+        return None
+
+    # HTML format: 🎥🔄 Retweet from <a href="fxtwitter_url">username</a>
+    # Use HTML entities for safety if username could contain <, >, &
+    import html
+    safe_username = html.escape(username)
+    # The URL should generally be safe, but cautious encoding doesn't hurt
+    safe_url = html.escape(fxtwitter_url)
+
+    return f'🎥🔄 Retweet from <a href="{safe_url}">{safe_username}</a>'
 
 # --- Batch Processing ---
 async def process_batch(target_chat_ids, func, args, semaphore, operation_desc="task"):
