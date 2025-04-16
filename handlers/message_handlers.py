@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 import html
-
+import re
 from telethon import events, TelegramClient
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError, ChatMigrated
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 async def execute_send(
     send_func, send_args: dict, semaphore: asyncio.Semaphore, log_prefix: str, message_id: int, operation_desc: str = "Send message"
 ):
-    # ... (implementation remains the same) ...
+    # ... (Implementation is correct from previous step) ...
     async with semaphore:
         current_chat_id = send_args.get("chat_id")
         if not current_chat_id:
@@ -45,7 +45,7 @@ async def execute_send(
                      if old_chat_id in group_config._group_settings:
                          mode_to_copy = group_config.get_group_mode(old_chat_id)
                          group_config.set_group_mode(new_chat_id, mode_to_copy)
-                         del group_config._group_settings[old_chat_id]
+                         if old_chat_id in group_config._group_settings: del group_config._group_settings[old_chat_id] # Check before deleting
                          logger.info(f"{log_prefix}Copied display mode '{mode_to_copy}' from {old_chat_id} to {new_chat_id}.")
                      else: logger.debug(f"{log_prefix}Old chat {old_chat_id} used default mode.")
                 except Exception as config_update_err: logger.error(f"{log_prefix}Failed to update group_config for migration: {config_update_err}")
@@ -83,22 +83,18 @@ def register_handlers(application: Application, client: TelegramClient, target_b
         sender_id = sender.id if sender else "Unknown"
         logger.info(f"{log_prefix}Received from source bot (ID: {sender_id})")
 
-        # --- Basic Checks ---
+        # --- Basic Checks & Info Extraction ---
         if not helpers.has_specific_button(message, settings.BUTTON_TEXT_TO_FIND):
             logger.debug(f"{log_prefix}Skipping: Missing '{settings.BUTTON_TEXT_TO_FIND}' button.")
             return
         try:
-            bot_info = await target_bot.get_me()
-            bot_username = bot_info.username
-            if not bot_username: raise ValueError("Bot username is missing")
-        except Exception as e:
-            logger.error(f"{log_prefix}Could not get target bot info: {e}", exc_info=True)
-            return
+            bot_info = await target_bot.get_me(); bot_username = bot_info.username
+            if not bot_username: raise ValueError("Bot username missing")
+        except Exception as e: logger.error(f"{log_prefix}Could not get bot info: {e}"); return
 
-        # --- Extract Core Content ---
         original_text = message.text or ""
         media_type = helpers.get_telethon_media_type(message)
-        tweet_url = helpers.extract_button_url(message, settings.BUTTON_TEXT_TO_FIND) # Keep original URL
+        tweet_url = helpers.extract_button_url(message, settings.BUTTON_TEXT_TO_FIND) # Original URL
 
         # ---> Step 1: Analyze Text Content <---
         action_type, username = helpers.extract_action_and_username(original_text)
@@ -118,166 +114,209 @@ def register_handlers(application: Application, client: TelegramClient, target_b
                 mode = group_config.get_group_mode(chat_id)
                 if mode == group_config.MODE_FXTWITTER: fxtwitter_targets.append(chat_id)
                 elif mode == group_config.MODE_FULL: full_mode_targets.append(chat_id)
-                else: logger.warning(f"{log_prefix}Unknown mode '{mode}' for {chat_id}, using 'full'."); full_mode_targets.append(chat_id)
-            except Exception as e: logger.error(f"{log_prefix}Error processing target {chat_id}: {e}", exc_info=True)
+                else: logger.warning(f"{log_prefix}Unknown mode '{mode}' for {chat_id}. Using 'full'."); full_mode_targets.append(chat_id)
+            except Exception as e: logger.error(f"{log_prefix}Error processing target {chat_id}: {e}")
 
         needs_media_processing = bool(full_mode_targets and media_type)
         logger.debug(f"{log_prefix}Targets - FX: {len(fxtwitter_targets)}, Full: {len(full_mode_targets)}. Needs media: {needs_media_processing}")
 
-        # ---> Step 4: Prepare Content Templates (Now uses analyzed data) <---
+        # ---> Step 4: Prepare Keyboards (Common Buttons) <---
+        # FXTwitter Keyboard (Original tweet URL for button)
+        keyboard_rows_fx = []
+        if tweet_url: keyboard_rows_fx.append([InlineKeyboardButton(settings.BUTTON_TEXT_TO_FIND, url=tweet_url)])
+        keyboard_rows_fx.append([InlineKeyboardButton("🚀 Deploy New Token", url=deploy_deep_link)]) # Using emoji from prev examples
+        reply_markup_fx = InlineKeyboardMarkup(keyboard_rows_fx)
 
-        # 4a. FXTwitter Content Template
-        reply_markup_fx = None
+        # Full Mode Keyboard (Original tweet URL for button)
+        keyboard_rows_full = []
+        if tweet_url: keyboard_rows_full.append([InlineKeyboardButton(settings.BUTTON_TEXT_TO_FIND, url=tweet_url)])
+        keyboard_rows_full.append([InlineKeyboardButton("🚀 Deploy New Token", url=deploy_deep_link)])
+        reply_markup_full = InlineKeyboardMarkup(keyboard_rows_full)
+
+        # ---> Step 5: Prepare Content Templates <---
+        # 5a. FXTwitter Content
         send_args_fx_template = None
         if fxtwitter_targets:
-            fx_url_inline = helpers.create_fxtwitter_url(tweet_url) # URL for inline link
+            fx_url_inline = helpers.create_fxtwitter_url(tweet_url)
             fxtwitter_text = helpers.format_fxtwitter_message_html(action_type, username, fx_url_inline)
             if not fxtwitter_text:
-                 logger.warning(f"{log_prefix}Failed to format FXTwitter text. Using fallback.")
-                 fxtwitter_text = f"➡️ {html.escape(original_text[:100])}{'...' if len(original_text) > 100 else ''}" # Simple fallback
-
-            keyboard_rows_fx = []
-            if tweet_url: # Use ORIGINAL URL for button
-                 keyboard_rows_fx.append([InlineKeyboardButton(settings.BUTTON_TEXT_TO_FIND, url=tweet_url)])
-            keyboard_rows_fx.append([InlineKeyboardButton("\U0001F680 Deploy New Token", url=deploy_deep_link)])
-            reply_markup_fx = InlineKeyboardMarkup(keyboard_rows_fx)
-
+                 logger.warning(f"{log_prefix}FXTwitter fallback to original text.")
+                 fxtwitter_text = f"{helpers.get_action_emoji(None)} {html.escape(original_text[:100])}{'...' if len(original_text) > 100 else ''}"
             send_args_fx_template = {'text': fxtwitter_text, 'reply_markup': reply_markup_fx, 'parse_mode': ParseMode.HTML}
 
-        # 4b. Full Mode Content Template
-        reply_markup_full = None
-        base_caption_full = html.escape(original_text) # Use escaped original text as base caption
+        # 5b. Full Mode Content (Header + Body)
+        final_full_content = None
         if full_mode_targets:
-            keyboard_rows_full = []
-            if tweet_url: # Use ORIGINAL URL for button
-                 keyboard_rows_full.append([InlineKeyboardButton(settings.BUTTON_TEXT_TO_FIND, url=tweet_url)])
-            keyboard_rows_full.append([InlineKeyboardButton("\U0001F680 Deploy New Token", url=deploy_deep_link)])
+            # Prepare Keyboard
+            keyboard_rows_full = [];
+            if tweet_url: keyboard_rows_full.append([InlineKeyboardButton(settings.BUTTON_TEXT_TO_FIND, url=tweet_url)])
+            keyboard_rows_full.append([InlineKeyboardButton("🚀 Deploy New Token", url=deploy_deep_link)])
             reply_markup_full = InlineKeyboardMarkup(keyboard_rows_full)
 
-        # ---> Step 5: Process Media (Conditional) <---
+            # Format the header
+            formatted_header = helpers.format_full_mode_header_html(action_type, username, tweet_url)
+
+            # Extract the message body raw
+            body_start_index = -1
+            if "\n\n" in original_text: body_start_index = original_text.find("\n\n") + 2
+            elif "\n" in original_text: body_start_index = original_text.find("\n") + 1
+            message_body_raw = original_text[body_start_index:].strip() if body_start_index != -1 else ""
+
+            # Format body: Handle **RT** variations specifically using regex
+            formatted_body = ""
+            if action_type == "Retweet":
+                # Regex to find optional **RT** (with optional spaces) at the beginning
+                # Captures the part *after* the RT prefix
+                rt_match = re.match(r"\**\s*RT\s*\**\s*(.*)", message_body_raw, re.IGNORECASE | re.DOTALL)
+                if rt_match:
+                    # Found the RT prefix, bold it and escape the rest
+                    prefix = "<b>RT</b>"
+                    rest_of_body = rt_match.group(1).strip() # Get content after RT
+                    formatted_body = f"{prefix} {html.escape(rest_of_body)}"
+                    logger.debug(f"{log_prefix}Applied specific RT formatting.")
+                else:
+                    # Retweet action, but didn't find the specific RT prefix pattern
+                    logger.debug(f"{log_prefix}Retweet action, but RT prefix not found/matched. Escaping full body.")
+                    formatted_body = html.escape(message_body_raw)
+            else:
+                # Not a Retweet, just escape the whole body
+                formatted_body = html.escape(message_body_raw)
+
+            # Combine header and formatted body
+            if formatted_header:
+                 final_full_content = f"{formatted_header}\n\n{formatted_body}".strip()
+            else:
+                 logger.warning(f"{log_prefix}Failed full mode header format. Using formatted body only.")
+                 final_full_content = formatted_body
+
+        # ---> Step 6: Launch FXTwitter Tasks (IMMEDIATELY) <---
+        launched_tasks = [] # Collect all task objects here
+        if fxtwitter_targets and send_args_fx_template:
+            logger.info(f"{log_prefix}Creating and launching {len(fxtwitter_targets)} FXTwitter send tasks...")
+            for chat_id in fxtwitter_targets:
+                target_log_prefix = f"{log_prefix}Target {chat_id} (FX): "
+                send_args_fx = send_args_fx_template.copy()
+                send_args_fx['chat_id'] = chat_id
+                launched_tasks.append(
+                    asyncio.create_task(
+                        execute_send(target_bot.send_message, send_args_fx, semaphore, target_log_prefix, message_id, "Send FXTwitter message")
+                    )
+                )
+            logger.info(f"{log_prefix}Launched FXTwitter tasks.")
+        elif fxtwitter_targets:
+            logger.error(f"{log_prefix}FXTwitter targets exist but template is missing. Skipping FX sends.")
+
+
+        # ---> Step 7: Process Media (Conditional) <---
         reusable_file_id = None
         media_content_bytes = None
+        effective_media_type = media_type
+
         if needs_media_processing:
-            logger.info(f"{log_prefix}Processing media ({media_type}) for {len(full_mode_targets)} full mode targets...")
-            # ... (Media download logic remains the same) ...
-            with error_handler.handle_errors("Media Download", message_id=message_id):
-                media_content_bytes = await client.download_media(message, file=bytes)
-
-            if media_content_bytes:
-                first_full_target_id = full_mode_targets[0]
-                logger.info(f"{log_prefix}Attempting initial upload of {media_type} to chat {first_full_target_id} to get file_id.")
-                # ... (File ID generation logic remains the same) ...
-                send_info = helpers.get_ptb_send_func_and_arg(media_type)
-                if send_info:
-                    upload_func_name, arg_name = send_info
-                    upload_func = getattr(target_bot, upload_func_name, None)
-                    if upload_func:
-                        upload_args = {'chat_id': first_full_target_id, arg_name: media_content_bytes, 'caption': None, 'reply_markup': None}
-                        sent_message_for_file_id = None
-                        with error_handler.handle_errors(f"Initial media upload ({media_type})", chat_id=first_full_target_id):
-                           sent_message_for_file_id = await upload_func(**upload_args)
-                        if sent_message_for_file_id:
-                            reusable_file_id = helpers.get_media_file_id(sent_message_for_file_id)
-                            if reusable_file_id:
-                                logger.info(f"{log_prefix}Obtained reusable file_id ({media_type})")
-                                # Update cache with file_id
-                                updated_cache_data = context_cache.get_from_cache(context_id) or initial_cache_data # Get existing or start fresh
-                                updated_cache_data['file_id'] = reusable_file_id
-                                context_cache.add_to_cache(context_id, updated_cache_data) # Overwrite entry
-                                logger.info(f"{log_prefix}Updated cache entry {context_id} with file_id.")
-                            else: logger.warning(f"{log_prefix}Could not extract file_id from temp message.")
-                            # Delete temporary message
-                            try:
-                                await target_bot.delete_message(chat_id=first_full_target_id, message_id=sent_message_for_file_id.message_id)
-                                logger.debug(f"{log_prefix}Deleted temporary message for file_id gen.")
-                            except Exception as del_err: logger.warning(f"{log_prefix}Could not delete temporary message: {del_err}")
-                        else: logger.error(f"{log_prefix}Initial media upload returned None/False.")
-                    else: logger.error(f"{log_prefix}Upload function {upload_func_name} not found.")
-                else: logger.error(f"{log_prefix}Unsupported media type {media_type} for file_id gen.")
-            else:
-                logger.warning(f"{log_prefix}Media download failed. Full mode targets get text only.")
-                media_type = None # Update effective media type
-
-        # ---> Step 6: Create and Launch Tasks for All Targets <---
-        all_tasks = []
-        current_effective_media_type = media_type # Use potentially updated type
-
-        for chat_id in current_target_groups:
-            mode = group_config.get_group_mode(chat_id) # Get mode again for this specific target
-            send_func = None
-            send_args = {}
-            target_log_prefix = f"{log_prefix}Target {chat_id} ({mode[:4].upper()}): "
-            op_desc = f"Send message (mode: {mode})"
-
+            logger.info(f"{log_prefix}Starting media processing ({effective_media_type})...")
             try:
-                if mode == group_config.MODE_FXTWITTER:
-                    if send_args_fx_template:
-                        send_func = target_bot.send_message
-                        send_args = send_args_fx_template.copy()
-                        send_args['chat_id'] = chat_id
-                        op_desc = "Send FXTwitter message"
-                    else:
-                        logger.error(f"{target_log_prefix}FXTwitter template not prepared. Skipping.")
-                        continue
+                with error_handler.handle_errors("Media Download", message_id=message_id, raise_exception=True):
+                    media_content_bytes = await client.download_media(message, file=bytes)
 
-                elif mode == group_config.MODE_FULL:
-                    send_args_full = {'chat_id': chat_id, 'reply_markup': reply_markup_full}
+                if media_content_bytes and full_mode_targets:
+                    first_full_target_id = full_mode_targets[0]
+                    logger.info(f"{log_prefix}Attempting initial upload to {first_full_target_id} for file_id.")
+                    send_info = helpers.get_ptb_send_func_and_arg(effective_media_type)
+                    if send_info:
+                        upload_func_name, arg_name = send_info
+                        upload_func = getattr(target_bot, upload_func_name, None)
+                        if upload_func:
+                            upload_args = {'chat_id': first_full_target_id, arg_name: media_content_bytes}
+                            sent_msg = None
+                            with error_handler.handle_errors(f"Initial media upload ({effective_media_type})", chat_id=first_full_target_id, raise_exception=True):
+                                sent_msg = await upload_func(**upload_args)
+                            if sent_msg:
+                                reusable_file_id = helpers.get_media_file_id(sent_msg)
+                                if reusable_file_id:
+                                    logger.info(f"{log_prefix}Obtained reusable file_id.")
+                                    updated_cache_data = context_cache.get_from_cache(context_id) or initial_cache_data
+                                    updated_cache_data['file_id'] = reusable_file_id
+                                    context_cache.add_to_cache(context_id, updated_cache_data)
+                                else: logger.warning(f"{log_prefix}Could not extract file_id.")
+                                try: await target_bot.delete_message(first_full_target_id, sent_msg.message_id)
+                                except Exception as del_err: logger.warning(f"{log_prefix}Failed delete temp msg: {del_err}")
+                            else: logger.error(f"{log_prefix}Initial upload func returned None.")
+                        else: logger.error(f"{log_prefix}Upload function {upload_func_name} not found.")
+                    else: logger.error(f"{log_prefix}Unsupported media type {effective_media_type} for file_id gen.")
+                else: # Download failed or empty
+                    logger.warning(f"{log_prefix}Media download failed/empty. Full mode targets get text only.")
+                    effective_media_type = None
+            except Exception as media_err:
+                 logger.error(f"{log_prefix}Media processing failed: {media_err}. Full mode targets get text fallback.", exc_info=True)
+                 effective_media_type = None; reusable_file_id = None; media_content_bytes = None
+            logger.info(f"{log_prefix}Finished media processing phase.")
+        elif full_mode_targets:
+             # Log if full mode targets exist but no media processing needed
+             logger.info(f"{log_prefix}No media processing needed for full mode targets (original message was text-only).")
 
-                    if current_effective_media_type and (reusable_file_id or media_content_bytes):
-                        send_info = helpers.get_ptb_send_func_and_arg(current_effective_media_type)
-                        if send_info:
-                            send_func_name, arg_name = send_info
-                            send_func = getattr(target_bot, send_func_name, None)
-                            if send_func:
-                                if reusable_file_id: send_args_full[arg_name] = reusable_file_id
-                                elif media_content_bytes: send_args_full[arg_name] = media_content_bytes
-                                else: send_func = None # Should not happen here, but safety
-                                if send_func:
-                                     send_args_full['caption'] = base_caption_full
-                                     send_args_full['parse_mode'] = ParseMode.HTML
-                                     op_desc=f"Send full message ({current_effective_media_type})"
-                            else: logger.error(f"{target_log_prefix}Media send func {send_func_name} not found. Fallback."); send_func = None
-                        else: logger.error(f"{target_log_prefix}Unsupported media {current_effective_media_type}. Fallback."); send_func = None
 
-                    if not send_func: # Fallback to text for full mode
-                        send_func = target_bot.send_message
-                        send_args_full['text'] = base_caption_full # Use the escaped original text
-                        send_args_full['parse_mode'] = ParseMode.HTML
-                        op_desc="Send full message (text fallback)"
+        # ---> Step 8: Prepare and Launch Full Mode Tasks <---
+        if full_mode_targets:
+            logger.info(f"{log_prefix}Creating {len(full_mode_targets)} Full Mode send tasks...")
+            send_func_full = None
+            base_send_args_full = {'reply_markup': reply_markup_full, 'parse_mode': ParseMode.HTML}
+            op_desc_full = ""
 
-                    send_args = send_args_full # Use the prepared args
+            # Determine function based on *effective* media type
+            if effective_media_type and (reusable_file_id or media_content_bytes):
+                 send_info = helpers.get_ptb_send_func_and_arg(effective_media_type)
+                 if send_info:
+                     send_func_name, arg_name = send_info
+                     send_func_full = getattr(target_bot, send_func_name, None)
+                     if send_func_full:
+                         base_send_args_full['caption'] = final_full_content # Use the formatted content
+                         if reusable_file_id: base_send_args_full[arg_name] = reusable_file_id
+                         elif media_content_bytes: base_send_args_full[arg_name] = media_content_bytes
+                         else: send_func_full = None
+                         if send_func_full: op_desc_full = f"Send full message ({effective_media_type})"
+                     else: logger.error(f"{log_prefix}Media func {send_func_name} not found. Fallback."); send_func_full = None
+                 else: logger.error(f"{log_prefix}Unsupported media {effective_media_type}. Fallback."); send_func_full = None
 
-                else: # Should not happen if categorization worked
-                    logger.error(f"{target_log_prefix}Unhandled mode '{mode}'. Skipping.")
-                    continue
+            # Setup for text if no media or media failed
+            if not send_func_full:
+                send_func_full = target_bot.send_message
+                base_send_args_full['text'] = final_full_content # Use the formatted content
+                op_desc_full = "Send full message (text fallback)"
+                if 'caption' in base_send_args_full: del base_send_args_full['caption'] # Ensure no caption if sending text
 
-                # Add task if function determined
-                if send_func:
-                    all_tasks.append(
+            # Create tasks
+            if send_func_full:
+                 for chat_id in full_mode_targets:
+                    target_log_prefix = f"{log_prefix}Target {chat_id} (Full): "
+                    send_args_full = base_send_args_full.copy()
+                    send_args_full['chat_id'] = chat_id
+                    launched_tasks.append( # Add to the *same* task list
                         asyncio.create_task(
-                            execute_send(send_func, send_args, semaphore, target_log_prefix, message_id, op_desc)
+                            execute_send(send_func_full, send_args_full, semaphore, target_log_prefix, message_id, op_desc_full)
                         )
                     )
-                else:
-                     logger.error(f"{target_log_prefix}Final check failed: send_func is None. Skipping task creation.")
-
-            except Exception as task_prep_err:
-                logger.error(f"{target_log_prefix}Error preparing task: {task_prep_err}", exc_info=True)
+                 logger.info(f"{log_prefix}Launched Full Mode tasks.")
+            else:
+                 logger.error(f"{log_prefix}Could not determine any send function for full mode targets.")
 
 
-        # ---> Step 7: Gather All Tasks <---
-        if all_tasks:
-            logger.info(f"{log_prefix}Launching {len(all_tasks)} send tasks concurrently...")
-            results = await asyncio.gather(*all_tasks, return_exceptions=True)
+        # ---> Step 9: Wait for All Launched Tasks <---
+        if launched_tasks:
+            logger.info(f"{log_prefix}Waiting for {len(launched_tasks)} send tasks to complete...")
+            results = await asyncio.gather(*launched_tasks, return_exceptions=True)
             success_count = sum(1 for r in results if isinstance(r, bool) and r is True)
             fail_count = len(results) - success_count
+            # Log individual errors from gather results
             for i, res in enumerate(results):
                  if isinstance(res, BaseException):
-                     # Error already logged in execute_send, just count here
-                     pass
+                     # Attempt to find corresponding chat_id (less reliable than logging in execute_send)
+                     # This part is tricky as task order isn't guaranteed vs target list order if FX/Full mixed
+                     # logger.error(f"{log_prefix}Send task {i+1}/{len(launched_tasks)} failed in gather: {res}", exc_info=isinstance(res, Exception))
+                     # Log error without trying to guess chat_id, error is logged in execute_send anyway
+                     logger.error(f"{log_prefix}A send task failed in gather: {res}", exc_info=isinstance(res, Exception))
             logger.info(f"{log_prefix}Finished sending. Tasks Succeeded: {success_count}, Tasks Failed: {fail_count}")
         else:
-            logger.info(f"{log_prefix}No send tasks were created.")
+            logger.info(f"{log_prefix}No messages needed to be sent (no targets or tasks created).")
 
 
     # --- End of register_handlers ---

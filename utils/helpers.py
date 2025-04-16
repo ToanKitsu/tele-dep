@@ -202,9 +202,29 @@ def format_fxtwitter_message_html(action_type: str | None, username: str | None,
 
     safe_username = html.escape(username)
     safe_url = html.escape(fxtwitter_url) # URL for the inline link
+    safe_action_text = html.escape(action_text) # Escape action text just in case
 
-    # Format: Emoji Action from <a href="fxtwitter_url">username</a>
-    return f'{emoji}{action_text} from <a href="{safe_url}">{safe_username}</a>'
+    # Format: Emoji <b>Action</b> from <a href="fxtwitter_url">username</a>
+    # ---> Added <b> tags around safe_action_text <---
+    return f'{emoji}<b>{safe_action_text}</b> from <a href="{safe_url}">{safe_username}</a>'
+
+def format_full_mode_header_html(action_type: str | None, username: str | None, original_tweet_url: str | None) -> str | None:
+    """Formats the header line for Full Mode messages using HTML."""
+    if not username or not original_tweet_url:
+        logger.warning(f"Cannot format Full Mode header: action='{action_type}', username='{username}', url='{original_tweet_url}'")
+        # Return a basic fallback if essential info is missing
+        action_text_fallback = action_type if action_type else "Action"
+        username_fallback = username if username else "Unknown User"
+        return f"{get_action_emoji(action_type)}<b>{html.escape(action_text_fallback)}</b> from <b>{html.escape(username_fallback)}</b>"
+
+    emoji = get_action_emoji(action_type)
+    action_text = action_type if action_type else "Action" # Default text if type unknown
+
+    safe_username = html.escape(username)
+    safe_original_url = html.escape(original_tweet_url) # URL for the inline link
+
+    # Format: Emoji <b>Action</b> from <a href="original_tweet_url">username</a>
+    return f'{emoji}<b>{html.escape(action_text)}</b> from <a href="{safe_original_url}">{safe_username}</a>'
 
 
 # --- Batch Processing ---
