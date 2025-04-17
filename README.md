@@ -23,12 +23,10 @@ Chuẩn bị một tài khoản Telegram, nên sử dụng account phụ
     - Add vào bao nhiêu group thì điền bấy nhiêu ID, ID group là số âm
 
 # Flow chạy hiện tại
-Bot Redacted gửi tin nhắn cho người dùng -> Bot Scraper lắng nghe sự kiện bot Redacted gửi tin nhắn cho người dùng -> Tải media + text > Reupload lên server Telegram -> Gửi cho nhiều group
+Full mode = Text + media
+FX mode = chỉ link fxtwitter ( một dạng link nhúng để preview nội dung link )
 
-# Small bug
-Ở nhóm đầu tiên ( là nhóm mà bot reupload media + text ) đang bị duplicate tin nhắn, từ group thứ 2 trở đi thì bình thường
+Bot Redacted gửi tin nhắn cho người dùng -> Bot Scraper lắng nghe sự kiện bot Redacted gửi tin nhắn cho người dùng -> Đọc text để xác nhận action -> Gửi file đến các group chọn FX Mode trước -> Tải media + text > Reupload lên server Telegram -> Gửi cho nhiều group chọn Full mode
 
-# Những gì còn thiếu
-Hiện tại sẽ tiếp đến là phần deploy, quản lí ví, và add liquidity
 
 Bạn có thể upload project lên github và dùng https://gitingest.com/ để lấy toàn bộ code để feed vào LLMs để biết thêm thông tin và luồng chạy thực tế, xong chuyển project thành private để bảo mật
