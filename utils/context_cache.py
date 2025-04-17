@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 import time
 import logging
-# --->>> THÊM IMPORT <<<---
 from telegram import Bot
-from . import helpers as utils_helpers # Import helper để dùng get_ptb_send_func_and_arg
-# -----------------------
+# --->>> THAY ĐỔI IMPORT HELPERS <<<---
+# from . import helpers as utils_helpers # Xóa dòng này
+from .helpers import media_utils # Import submodule cụ thể
+# ----------------------------------
 
 logger = logging.getLogger(__name__)
+
 
 # Structure: { context_id: {'text': ..., 'media_type': ..., 'file_id': ..., 'timestamp': ...} }
 message_context_cache = {}
@@ -71,63 +73,67 @@ def remove_from_cache(context_id: str):
 async def resend_cached_message(chat_id: int, context_id: str, bot: Bot) -> bool:
     """Looks up context_id, resends the message content, and removes from cache."""
     logger.info(f"Attempting to resend cached message for context_id: {context_id} to chat {chat_id}")
-    # Use get_from_cache defined above
-    cached_data = get_from_cache(context_id)
+    cached_data = get_from_cache(context_id) # Use get_from_cache defined above
 
     if not cached_data:
-        # get_from_cache already logs expiration/not found
         return False # Not found or expired
 
-    logger.info(f"Resending message content for context ID: {context_id}")
-    text = cached_data.get('text', '')
+    logger.debug(f"Resending message content for context ID: {context_id}")
+    text = cached_data.get('text', '') # Sử dụng caption làm text gốc nếu có media
     media_type = cached_data.get('media_type')
     file_id = cached_data.get('file_id')
-    logger.debug(f"Cache data - text: {bool(text)}, media_type: {media_type}, file_id: {bool(file_id)}")
+    # Lấy caption từ text nếu có media, nếu không thì text là text
+    caption_or_text = text if media_type else text # Sẽ điều chỉnh ở dưới
+
+    logger.debug(f"Cache data - text/caption: {bool(caption_or_text)}, media_type: {media_type}, file_id: {bool(file_id)}")
 
     resend_func = None
     resend_args = {}
+    success = False
 
     try:
         if media_type and file_id:
-            # Use the imported helper function
-            send_info = utils_helpers.get_ptb_send_func_and_arg(media_type)
+            # --->>> SỬ DỤNG HELPER ĐÃ MODULE HÓA <<<---
+            send_info = media_utils.get_ptb_send_func_and_arg(media_type)
+            # -----------------------------------------
             if send_info:
                 send_func_name, arg_name = send_info
                 resend_func = getattr(bot, send_func_name, None)
                 if resend_func:
-                    resend_args = {'chat_id': chat_id, arg_name: file_id, 'caption': text}
+                    # Truyền caption nếu là media, không truyền nếu là text
+                    resend_args = {'chat_id': chat_id, arg_name: file_id, 'caption': caption_or_text}
                     logger.debug(f"Prepared to resend media type {media_type} using file_id.")
                 else:
                     logger.error(f"Resend failed: PTB function {send_func_name} not found.")
-                    # Fallback to text message
                     resend_func = bot.send_message
-                    resend_args = {'chat_id': chat_id, 'text': text if text else "(Media content could not be resent)"}
+                    resend_args = {'chat_id': chat_id, 'text': caption_or_text if caption_or_text else "(Media content could not be resent)"}
             else:
                 logger.error(f"Resend failed: Unsupported media type {media_type}")
                 resend_func = bot.send_message
-                resend_args = {'chat_id': chat_id, 'text': text if text else "(Unsupported media could not be resent)"}
-        elif text:
+                resend_args = {'chat_id': chat_id, 'text': caption_or_text if caption_or_text else "(Unsupported media could not be resent)"}
+        elif caption_or_text: # Chỉ có text
             resend_func = bot.send_message
-            resend_args = {'chat_id': chat_id, 'text': text}
+            resend_args = {'chat_id': chat_id, 'text': caption_or_text}
             logger.debug("Prepared to resend text message.")
         else:
             logger.warning(f"No content found in cache for context ID {context_id} to resend.")
-            remove_from_cache(context_id) # Use remove_from_cache defined above
+            # remove_from_cache sẽ được gọi trong finally
             return False
 
         if resend_func:
             await resend_func(**resend_args)
             logger.info(f"Successfully resent content for context ID {context_id} to chat {chat_id}")
+            success = True
         else:
              logger.error(f"Resend failed: No valid resend function determined for context ID {context_id}.")
-             return False # Explicitly return False if no function was found
+             success = False
 
     except Exception as e:
         logger.error(f"Error resending cached message for {context_id}: {e}", exc_info=True)
-        return False # Return False on error
+        success = False
     finally:
         # Always remove from cache after attempting resend (success or fail)
          remove_from_cache(context_id) # Use remove_from_cache defined above
 
-    return True # Return True only if function was found and called without error
+    return success # Return True only if function was found and called without error
 # ------------------------------------------------
