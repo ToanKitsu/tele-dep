@@ -29,4 +29,4 @@ FX mode = chỉ link fxtwitter ( một dạng link nhúng để preview nội du
 Bot Redacted gửi tin nhắn cho người dùng -> Bot Scraper lắng nghe sự kiện bot Redacted gửi tin nhắn cho người dùng -> Đọc text để xác nhận action -> Gửi file đến các group chọn FX Mode trước -> Tải media + text > Reupload lên server Telegram -> Gửi cho nhiều group chọn Full mode
 
 
-Bạn có thể upload project lên github và dùng https://gitingest.com/ để lấy toàn bộ code để feed vào LLMs để biết thêm thông tin và luồng chạy thực tế, xong chuyển project thành private để bảo mật
+Bạn có thể upload project lên github và dùng https://gitingest.com/ để lấy toàn bộ code để feed vào LLMs để biết thêm thông tin và luồng chạy thực tế
